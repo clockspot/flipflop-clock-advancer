@@ -1,2 +1,3 @@
 # flipflop-clock-advancer
-For driving e.g. Solari Cifra 120 using alternating constant-power connections
+
+Low-power ESP32 + DS3231 solution for toggling a SPDT relay, for driving e.g. Solari Cifra 120
