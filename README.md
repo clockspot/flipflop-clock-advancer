@@ -1,25 +1,25 @@
 # flipflop-clock-advancer
 
-**Do you need to toggle a latching relay on schedule in a low-power application? Look no further!**
+This project is designed to drive Solari Udine 120 series flip clocks (Cifra/Dator/MD). These use a pair of SPDT switches to drive the display: when the “start” switch is toggled, a DC motor runs until it toggles the “stop” switch.
 
-This project uses an ESP32, triggered by the alarms from a DS3231 RTC, to toggle the relay and then hibernate for maximum power efficiency. Optionally, the ESP32 can also sync the RTC to NTP via WiFi and adjust it for DST changes (TODO). [See hardware details below.](#hardware)
+Here, we replace the “start” switch with a latching relay toggled by an ESP32, which is triggered in turn by interrupts from a DS3231 RTC. The ESP32 spends most of its time in deep sleep for maximum power efficiency, so the clocks can be run on battery power. Optionally, the ESP32 can also sync the RTC to NTP via WiFi and adjust it for DST changes (TODO). [See hardware details below.](#hardware)
 
-It is designed to drive Solari di Udine 120 series flip clocks: Cifra (time) and/or Dator/MD (calendar). These clocks use a pair of SPDT switches to advance the display: when the “start” switch is toggled, the DC motor runs until it toggles the “stop” switch. This project replaces the “start” switch with a latching SPDT relay, so the clocks can be driven independently and on battery power. Two modes are supported (details below): [Cifra](#cifra-mode) and [Dator](#dator-mode).
+Two modes are provided: [Cifra](#cifra-mode) for driving a Cifra or Cifra+Dator pair, and [Dator](#dator-mode) for driving a Dator on its own.
 
 ![Cifra and Dator 120](https://user-images.githubusercontent.com/9385318/219879893-06b7a8ef-29c7-4472-87ab-24f45dd007af.jpeg)
 Cifra and Dator 120.
 
 ![QT Py ESP32, BFF charger, and DS3231](https://user-images.githubusercontent.com/9385318/219879905-9410cee5-5b5d-4968-abd2-000e74f9a8f5.jpeg)
-Adafruit QT Py ESP32 module with BFF power supply “hat” (right), connected to DS3231 RTC module (left) via STEMMA QT (3V, GND, SDA1, SCL1) and an interrupt wire (SQW->A3) to wake the ESP32 from deep sleep.
+[Adafruit QT Py ESP32-S2 module](https://www.adafruit.com/product/5325) with [BFF power supply “hat”](https://www.adafruit.com/product/5397) (right), connected to [DS3231 RTC module](https://www.adafruit.com/product/5188) (left) via STEMMA QT (3V, GND, SDA1, SCL1) and an interrupt wire (SQW->A3) to wake the ESP32 from deep sleep.
 
 ![IMG_4328a](https://user-images.githubusercontent.com/9385318/219879913-dc18063b-2470-4dc9-b450-c74edaedcc97.jpeg)
-ESP32+BFF (right) and RTC installed in my Cifra, along with a LiPo battery. The black/red jumpers supply 5V to the Cifra in place of its original power supply. The blue/brown jumpers (on A0/A1) trigger the relay module (in back), which also gets 3V running power from the other STEMMA connector on the RTC module. The Diehl 1/2rpm synchronous motor (center) is no longer used.
+ESP32+BFF (right) and RTC installed in my Cifra, along with a [LiPo battery](https://www.adafruit.com/product/1781). The black/red jumpers supply 5V to the Cifra in place of its original power supply. The blue/brown jumpers (on A0/A1) trigger the [relay module](https://www.adafruit.com/product/2923) (in back), which also gets 3V running power from the other STEMMA connector on the RTC module. The Diehl 1/2rpm synchronous motor (center) is no longer used.
 
 ![IMG_4329a](https://user-images.githubusercontent.com/9385318/219879920-c53a7387-0230-49f4-abdf-3d554bf08889.jpeg)
-The relay module (top), with its NC/COM/NO terminals connected in place of the original “start” switch (center) that was toggled by the synchronous motor.
+[The relay module](https://www.adafruit.com/product/2923) (top), with its NC/COM/NO terminals connected in place of the original “start” switch (center) that was toggled by the synchronous motor.
 
 ![IMG_4332a](https://user-images.githubusercontent.com/9385318/219879924-d54c484a-eb96-41bc-807c-217640f5a581.jpeg)
-The standard connection between the Cifra (left) and Dator/MD (right), comprising “prepare“ and “advance“ signal wires and a ground wire.
+The standard connection between the Cifra (left) and Dator (right), comprising “prepare“ (red) and “advance“ (yellow) wires and a ground (black) wire.
 
 ## Cifra mode
 
@@ -55,7 +55,7 @@ The Dator/MD 120’s “start” switch is located inside the Cifra, and is togg
 
 ## Hardware
 
-My prototype implementation uses hardware selections from Adafruit: [QT Py ESP32-S2](https://www.adafruit.com/product/5325) with [BFF charger](https://www.adafruit.com/product/5397) and [battery](https://www.adafruit.com/product/1781); [DS3231 RTC](https://www.adafruit.com/product/5188); and [latching SPDT relay](https://www.adafruit.com/product/2923). The QT Py connections are:
+My prototype implementation uses hardware selections from Adafruit: [QT Py ESP32-S2](https://www.adafruit.com/product/5325) with [BFF power supply/charger](https://www.adafruit.com/product/5397) and [battery](https://www.adafruit.com/product/1781); [DS3231 RTC](https://www.adafruit.com/product/5188); and [latching SPDT relay](https://www.adafruit.com/product/2923). The QT Py connections are:
 
 * 5V (from USB or BFF) to:
   * Cifra: the red/white wire from the original power supply
