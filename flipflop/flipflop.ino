@@ -100,12 +100,12 @@ void setup(){
     //INT pin on DS3231 should be ready to go: "When INTCN is set to logic 1, then a match between the timekeeping registers and either of the alarm registers activates the INT/SQW pin (if the alarm is enabled). Because the INTCN bit is set to logic 1 when power is first applied, the pin defaults to an interrupt output with alarms disabled."
     //Set alarms
     #ifdef MODE_CIFRA
-      rtc.setAlarm1(DateTime(2,0,10),DS3231_A1_Hour); //02:00:10: NTP/DST
-      rtc.setAlarm2(DateTime(0,0,0),DS3231_A2_PerMinute); //every minute: toggle relay
+      rtc.setAlarm1(DateTime(2020,1,1,2,0,10),DS3231_A1_Hour); //02:00:10: NTP/DST
+      rtc.setAlarm2(DateTime(2020,1,1,0,0,0),DS3231_A2_PerMinute); //every minute: toggle relay
     #endif
     #ifdef MODE_DATOR
-      rtc.setAlarm1(DateTime(22,0,0),DS3231_A1_Hour); //22:00:00: set relay (warning), NTP/DST
-      rtc.setAlarm2(DateTime(0,0,0),DS3231_A2_Hour); //00:00:00: unset relay (advance)
+      rtc.setAlarm1(DateTime(2020,1,1,22,0,0),DS3231_A1_Hour); //22:00:00: set relay (warning), NTP/DST
+      rtc.setAlarm2(DateTime(2020,1,1,0,0,0),DS3231_A2_Hour); //00:00:00: unset relay (advance)
     #endif
     Serial.print("Clock set. ");
     //We do not advance the clock at this point, it is assumed to already be at position 00:00 / even minute / dator advance
