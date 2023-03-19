@@ -124,9 +124,9 @@ void setup(){
           pixels.fill(0xFF0000); //red
           pixels.show();
         #endif
-        digitalWrite(RELAY_SET_PIN_GPIO_NUM,HIGH);
+        digitalWrite(RELAY_SET_PIN,HIGH);
         delay(RELAY_PULSE);
-        digitalWrite(RELAY_SET_PIN_GPIO_NUM,LOW);
+        digitalWrite(RELAY_SET_PIN,LOW);
       #endif
       //for both CIFRA and DATOR
       rtcAdjust();
@@ -139,17 +139,17 @@ void setup(){
             pixels.fill(0xFF0000); //red
             pixels.show();
           #endif
-          digitalWrite(RELAY_SET_PIN_GPIO_NUM,HIGH);
+          digitalWrite(RELAY_SET_PIN,HIGH);
           delay(RELAY_PULSE);
-          digitalWrite(RELAY_SET_PIN_GPIO_NUM,LOW);  
+          digitalWrite(RELAY_SET_PIN,LOW);  
         } else { //unset relay for even minute
           #ifdef ENABLE_NEOPIXEL
             pixels.fill(0x00FF00); //green
             pixels.show();
           #endif
-          digitalWrite(RELAY_UNSET_PIN_GPIO_NUM,HIGH);
+          digitalWrite(RELAY_UNSET_PIN,HIGH);
           delay(RELAY_PULSE);
-          digitalWrite(RELAY_UNSET_PIN_GPIO_NUM,LOW);
+          digitalWrite(RELAY_UNSET_PIN,LOW);
         }
       #endif
       #ifdef MODE_DATOR
@@ -158,9 +158,9 @@ void setup(){
           pixels.fill(0x00FF00); //green
           pixels.show();
         #endif
-        digitalWrite(RELAY_UNSET_PIN_GPIO_NUM,HIGH);
+        digitalWrite(RELAY_UNSET_PIN,HIGH);
         delay(RELAY_PULSE);
-        digitalWrite(RELAY_UNSET_PIN_GPIO_NUM,LOW);
+        digitalWrite(RELAY_UNSET_PIN,LOW);
       #endif
     } //end alarmFired(2)
     
@@ -188,10 +188,10 @@ void loop() {
   //Once setup is done, quiet down and go to sleep
   rtc.clearAlarm(1);
   rtc.clearAlarm(2);
-  digitalWrite(RELAY_UNSET_PIN_GPIO_NUM,LOW);
-  digitalWrite(RELAY_SET_PIN_GPIO_NUM,LOW);
-  gpio_hold_en(RELAY_UNSET_PIN_GPIO_NUM);
-  gpio_hold_en(RELAY_SET_PIN_GPIO_NUM);
+  digitalWrite(RELAY_UNSET_PIN,LOW);
+  digitalWrite(RELAY_SET_PIN,LOW);
+  gpio_hold_en(RELAY_UNSET_PIN);
+  gpio_hold_en(RELAY_SET_PIN);
   Serial.flush(); 
   esp_deep_sleep_start();
 }

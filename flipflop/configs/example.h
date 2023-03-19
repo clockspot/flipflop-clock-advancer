@@ -13,7 +13,7 @@
 
 //pins expressed in gpio_num_t format
 #define RELAY_UNSET_PIN GPIO_NUM_18 //A0
-#define RELAY_SET_PIN_GPIO_NUM GPIO_NUM_17 //A1
+#define RELAY_SET_PIN GPIO_NUM_17 //A1
 #define BATTERY_MONITOR_PIN GPIO_NUM_9 //A2, when QT Py is equipped with LiPo BFF
 #define WAKEUP_PIN GPIO_NUM_8 //A3 per https://learn.adafruit.com/adafruit-qt-py-esp32-s2/pinouts
 
