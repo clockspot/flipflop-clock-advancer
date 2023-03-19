@@ -100,12 +100,12 @@ void setup(){
     //INT pin on DS3231 should be ready to go: "When INTCN is set to logic 1, then a match between the timekeeping registers and either of the alarm registers activates the INT/SQW pin (if the alarm is enabled). Because the INTCN bit is set to logic 1 when power is first applied, the pin defaults to an interrupt output with alarms disabled."
     //Set alarms
     #ifdef MODE_CIFRA
-      rtc.setAlarm1(DateTime(2,0,10),DS3231_A1_Hour); //02:00:10: NTP/DST
-      rtc.setAlarm2(DateTime(0,0,0),DS3231_A2_PerMinute); //every minute: toggle relay
+      rtc.setAlarm1(DateTime(2020,1,1,2,0,10),DS3231_A1_Hour); //02:00:10: NTP/DST
+      rtc.setAlarm2(DateTime(2020,1,1,0,0,0),DS3231_A2_PerMinute); //every minute: toggle relay
     #endif
     #ifdef MODE_DATOR
-      rtc.setAlarm1(DateTime(22,0,0),DS3231_A1_Hour); //22:00:00: set relay (warning), NTP/DST
-      rtc.setAlarm2(DateTime(0,0,0),DS3231_A2_Hour); //00:00:00: unset relay (advance)
+      rtc.setAlarm1(DateTime(2020,1,1,22,0,0),DS3231_A1_Hour); //22:00:00: set relay (warning), NTP/DST
+      rtc.setAlarm2(DateTime(2020,1,1,0,0,0),DS3231_A2_Hour); //00:00:00: unset relay (advance)
     #endif
     Serial.print("Clock set. ");
     //We do not advance the clock at this point, it is assumed to already be at position 00:00 / even minute / dator advance
@@ -124,9 +124,9 @@ void setup(){
           pixels.fill(0xFF0000); //red
           pixels.show();
         #endif
-        digitalWrite(RELAY_SET_PIN_GPIO_NUM,HIGH);
+        digitalWrite(RELAY_SET_PIN,HIGH);
         delay(RELAY_PULSE);
-        digitalWrite(RELAY_SET_PIN_GPIO_NUM,LOW);
+        digitalWrite(RELAY_SET_PIN,LOW);
       #endif
       //for both CIFRA and DATOR
       rtcAdjust();
@@ -139,17 +139,17 @@ void setup(){
             pixels.fill(0xFF0000); //red
             pixels.show();
           #endif
-          digitalWrite(RELAY_SET_PIN_GPIO_NUM,HIGH);
+          digitalWrite(RELAY_SET_PIN,HIGH);
           delay(RELAY_PULSE);
-          digitalWrite(RELAY_SET_PIN_GPIO_NUM,LOW);  
+          digitalWrite(RELAY_SET_PIN,LOW);  
         } else { //unset relay for even minute
           #ifdef ENABLE_NEOPIXEL
             pixels.fill(0x00FF00); //green
             pixels.show();
           #endif
-          digitalWrite(RELAY_UNSET_PIN_GPIO_NUM,HIGH);
+          digitalWrite(RELAY_UNSET_PIN,HIGH);
           delay(RELAY_PULSE);
-          digitalWrite(RELAY_UNSET_PIN_GPIO_NUM,LOW);
+          digitalWrite(RELAY_UNSET_PIN,LOW);
         }
       #endif
       #ifdef MODE_DATOR
@@ -158,9 +158,9 @@ void setup(){
           pixels.fill(0x00FF00); //green
           pixels.show();
         #endif
-        digitalWrite(RELAY_UNSET_PIN_GPIO_NUM,HIGH);
+        digitalWrite(RELAY_UNSET_PIN,HIGH);
         delay(RELAY_PULSE);
-        digitalWrite(RELAY_UNSET_PIN_GPIO_NUM,LOW);
+        digitalWrite(RELAY_UNSET_PIN,LOW);
       #endif
     } //end alarmFired(2)
     
@@ -188,10 +188,10 @@ void loop() {
   //Once setup is done, quiet down and go to sleep
   rtc.clearAlarm(1);
   rtc.clearAlarm(2);
-  digitalWrite(RELAY_UNSET_PIN_GPIO_NUM,LOW);
-  digitalWrite(RELAY_SET_PIN_GPIO_NUM,LOW);
-  gpio_hold_en(RELAY_UNSET_PIN_GPIO_NUM);
-  gpio_hold_en(RELAY_SET_PIN_GPIO_NUM);
+  digitalWrite(RELAY_UNSET_PIN,LOW);
+  digitalWrite(RELAY_SET_PIN,LOW);
+  gpio_hold_en(RELAY_UNSET_PIN);
+  gpio_hold_en(RELAY_SET_PIN);
   Serial.flush(); 
   esp_deep_sleep_start();
 }
