@@ -7,6 +7,7 @@
 //Declarations
 void setup();
 void loop();
-void rtcAdjust();
+void relaySet(bool state);
+void ntpSync();
 
 #endif //FLIPFLOP_H

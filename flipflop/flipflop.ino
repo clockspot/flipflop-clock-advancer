@@ -4,18 +4,22 @@
 
 #include <arduino.h>
 #include "flipflop.h" //specifies config
-#include <RTClib.h> //RTC_DS3231 and DateTime
 #include "esp_sleep.h"
 
-//TODO which of these are needed for NTP sync
-// #include <ArduinoJson.h> // https://github.com/bblanchon/ArduinoJson needs version v6 or above
-// #include <WiFi.h>
-// #include <WiFiClientSecure.h>
-// #include <HTTPClient.h> // Needs to be from the ESP32 platform version 3.2.0 or later, as the previous has problems with http-redirect
+#include "time.h" //struct tm, time_t, localtime_r(), getLocalTime() — always needed for DST check and no-DS3231 wakeup timing
+
+#ifdef NETWORK_SSID
+  //see https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/Time/SimpleTime/SimpleTime.ino
+  #include <WiFi.h>
+  #include "esp_sntp.h"
+#endif
 
 //RTC objects
-RTC_DS3231 rtc;
-DateTime tod; //stores the rtc.now() snapshot for several functions to use
+#ifdef USE_DS3231_RTC
+  #include <RTClib.h> //RTC_DS3231 and DateTime
+  RTC_DS3231 rtc;
+  DateTime tod; //stores the rtc.now() snapshot for several functions to use
+#endif
 
 #ifdef ENABLE_NEOPIXEL
   #include <Adafruit_NeoPixel.h>
@@ -26,8 +30,21 @@ DateTime tod; //stores the rtc.now() snapshot for several functions to use
 #ifndef RELAY_PULSE
 #define RELAY_PULSE 10
 #endif
-#ifndef COLD_START_HOUR
-#define COLD_START_HOUR 0
+
+// Sanity check: without a DS3231 or NTP, SHOW_SERIAL is required for manual time entry on cold boot
+#if !defined(USE_DS3231_RTC) && !defined(NETWORK_SSID) && !defined(SHOW_SERIAL)
+  #error "Without USE_DS3231_RTC and NETWORK_SSID, SHOW_SERIAL must be defined for manual time entry"
+#endif
+
+#ifdef MODE_CIFRA
+  // Set during fall-back DST detection; cleared when real time (ESP32 system clock) reaches 02:00
+  RTC_DATA_ATTR bool waitForFallBack = false;
+#endif
+
+#if defined(SHOW_SERIAL) && !defined(NETWORK_SSID)
+  int inputStage = 0; // serial menu state on cold boot: 0=waiting, 1-6=date/time entry, 99=done
+  struct tm manualTime; // accumulates fields entered via serial
+  unsigned long coldBootStart = 0; // millis() when cold-boot prompt was shown
 #endif
 
 void setup(){
@@ -39,12 +56,14 @@ void setup(){
   digitalWrite(RELAY_UNSET_PIN,LOW);
   digitalWrite(RELAY_SET_PIN,LOW);
 
-  pinMode(WAKEUP_PIN, INPUT_PULLUP);
-  gpio_hold_en(WAKEUP_PIN); //https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/gpio.html#_CPPv316rtc_gpio_hold_en10gpio_num_t
-  esp_sleep_enable_ext0_wakeup(WAKEUP_PIN, 0);
-  //TODO save further power by leveraging Deep Sleep Wake Stub?
-  //https://randomnerdtutorials.com/esp32-deep-sleep-arduino-ide-wake-up-sources/  
-  
+  #ifdef USE_DS3231_RTC
+    pinMode(WAKEUP_PIN, INPUT_PULLUP);
+    gpio_hold_en(WAKEUP_PIN); //https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/gpio.html#_CPPv316rtc_gpio_hold_en10gpio_num_t
+    esp_sleep_enable_ext0_wakeup(WAKEUP_PIN, 0);
+    //TODO save further power by leveraging Deep Sleep Wake Stub?
+    //https://randomnerdtutorials.com/esp32-deep-sleep-arduino-ide-wake-up-sources/
+  #endif
+
   #ifdef BATTERY_MONITOR_PIN
     pinMode(BATTERY_MONITOR_PIN, INPUT);
   #endif
@@ -57,251 +76,400 @@ void setup(){
       pinMode(NEOPIXEL_POWER, OUTPUT);
       digitalWrite(NEOPIXEL_POWER, HIGH);
     #endif
-    
+
     pixels.begin(); // INITIALIZE NeoPixel strip object (REQUIRED)
     pixels.setBrightness(20); // not so bright
   #endif
-  
-  //#ifdef SHOW_SERIAL
-  Serial.begin(115200);
-  // #ifdef SAMD_SERIES
-  //   while(!Serial);
-  // #else
-  //   delay(1);
-  // #endif
-  // Serial.println(F("Hello world"));
-  //#endif
-  
-  #ifdef DEV_STARTUP_PAUSE
-    pixels.fill(0x0000FF); //indicate startup pause
-    pixels.show();
-    delay(3000); //for development, just in case it boot loops, this gives time to load a new sketch
+
+  #ifdef SHOW_SERIAL
+    Serial.begin(115200);
   #endif
-  
-  rtc.begin();
-  //RTC debug:
-  // if(digitalRead(WAKEUP_PIN)) Serial.print("Pin high. "); else Serial.print("Pin low. ");
-  // if(rtc.alarmFired(1)) Serial.print("Alarm 1 signaling. ");
-  // if(rtc.alarmFired(2)) Serial.print("Alarm 2 signaling. ");
-  
+
+  // Set timezone from config so DST rules apply to mktime/localtime even without NTP
+  #if defined(TIME_ZONE) && !defined(NETWORK_SSID)
+    setenv("TZ", TIME_ZONE, 1);
+    tzset();
+  #endif
+
+  //TODO only need to do this when I2C is powered and communication needs to happen
+  #ifdef USE_DS3231_RTC
+    rtc.begin();
+  #endif
+
   //Who disturbs my slumber??
-  if(esp_sleep_get_wakeup_cause()==ESP_SLEEP_WAKEUP_UNDEFINED) { //Cold start
-  
+  esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
+
+  if(wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED) { //Cold start
+
     #ifdef ENABLE_NEOPIXEL
       pixels.fill(0x00FFFF); //teal to indicate hello world
       pixels.show();
     #endif
-    //Setup RTC
-    //For manual sync purposes, set the time (in CIFRA case, effectively the top of any even minute)
-    rtc.adjust(DateTime(2020,1,1,COLD_START_HOUR,0,0));
-    //Clear alarm signals, if present - do we need this here?
-    // rtc.clearAlarm(1);
-    // rtc.clearAlarm(2);
-    //INT pin on DS3231 should be ready to go: "When INTCN is set to logic 1, then a match between the timekeeping registers and either of the alarm registers activates the INT/SQW pin (if the alarm is enabled). Because the INTCN bit is set to logic 1 when power is first applied, the pin defaults to an interrupt output with alarms disabled."
-    //Set alarms
-    #ifdef MODE_CIFRA
-      rtc.setAlarm1(DateTime(2020,1,1,2,0,10),DS3231_A1_Hour); //02:00:10: NTP/DST
-      rtc.setAlarm2(DateTime(2020,1,1,0,0,0),DS3231_A2_PerMinute); //every minute: toggle relay
+
+    //Attempt to sync to NTP; without NETWORK_SSID, loop() prompts for manual time entry via serial
+    #ifdef NETWORK_SSID
+      ntpSync();
+      delay(10000); //sketch upload window after NTP
     #endif
-    #ifdef MODE_DATOR
-      rtc.setAlarm1(DateTime(2020,1,1,22,0,0),DS3231_A1_Hour); //22:00:00: set relay (warning), NTP/DST
-      rtc.setAlarm2(DateTime(2020,1,1,0,0,0),DS3231_A2_Hour); //00:00:00: unset relay (advance)
-    #endif
-    Serial.print("Clock set. ");
-    //We do not advance the clock at this point, it is assumed to already be at position 00:00 / even minute / dator advance
-    delay(10000); //gives a chance to upload new sketch before it sleeps
-    
-  } //end cold start
-  else { //woke from sleep, probably by ESP_SLEEP_WAKEUP_EXT0
-    //TODO could also maybe use esp_wake_deep_sleep
-    
-    tod = rtc.now(); //take snapshot of current time
-    
-    if(rtc.alarmFired(1)) {
-      #ifdef MODE_DATOR
-        //set relay for prepare state
-        #ifdef ENABLE_NEOPIXEL
-          pixels.fill(0xFF0000); //red
-          pixels.show();
-        #endif
-        digitalWrite(RELAY_SET_PIN,HIGH);
-        delay(RELAY_PULSE);
-        digitalWrite(RELAY_SET_PIN,LOW);
+
+    //INT pin on DS3231 should be ready to go: "When INTCN is set to logic 1, then a match between
+    //the timekeeping registers and either of the alarm registers activates the INT/SQW pin (if the
+    //alarm is enabled). Because the INTCN bit is set to logic 1 when power is first applied, the
+    //pin defaults to an interrupt output with alarms disabled."
+    //Set alarms (DS3231 only)
+    #ifdef USE_DS3231_RTC
+      #ifdef MODE_CIFRA
+        rtc.setAlarm1(DateTime(2020,1,1,1,59,0), DS3231_A1_Hour);      //01:59:00: DST check and NTP sync
+        rtc.setAlarm2(DateTime(2020,1,1,0,0,0), DS3231_A2_PerMinute); //every minute: toggle relay
       #endif
-      //for both CIFRA and DATOR
-      rtcAdjust();
-    } //end alarmFired(1)
-    
-    if(rtc.alarmFired(2)) {
-      #ifdef MODE_CIFRA //Toggle relay per RTC minutes
-        if(tod.minute()%2) { //set relay for odd minute
-          #ifdef ENABLE_NEOPIXEL
-            pixels.fill(0xFF0000); //red
-            pixels.show();
-          #endif
-          digitalWrite(RELAY_SET_PIN,HIGH);
-          delay(RELAY_PULSE);
-          digitalWrite(RELAY_SET_PIN,LOW);  
-        } else { //unset relay for even minute
-          #ifdef ENABLE_NEOPIXEL
-            pixels.fill(0x00FF00); //green
-            pixels.show();
-          #endif
-          digitalWrite(RELAY_UNSET_PIN,HIGH);
-          delay(RELAY_PULSE);
-          digitalWrite(RELAY_UNSET_PIN,LOW);
+      #ifdef MODE_DATOR
+        rtc.setAlarm1(DateTime(2020,1,1,22,0,0), DS3231_A1_Hour); //22:00:00: set relay (warning), NTP sync
+        rtc.setAlarm2(DateTime(2020,1,1,0,0,0), DS3231_A2_Hour);  //00:00:00: unset relay (advance)
+      #endif
+    #endif
+
+    #if defined(SHOW_SERIAL) && !defined(NETWORK_SSID)
+      delay(2000); //allow serial monitor to connect
+      Serial.println(F("Enter 'r' to set time manually (20s)."));
+      coldBootStart = millis();
+    #endif
+    //We do not advance the clock at this point; it is assumed to already be at position 00:00 / even minute / dator advance
+
+  } //end cold start
+  else { //woke from sleep
+
+    #ifdef USE_DS3231_RTC
+      tod = rtc.now(); //take snapshot of current time
+
+      //Check alarm2 first: relay action before DST check and NTP sync
+      if(rtc.alarmFired(2)) {
+        #ifdef MODE_CIFRA
+          //During fall-back wait, check if real time (ESP32 system clock) has reached 02:00
+          if(waitForFallBack) {
+            struct tm realNow;
+            if(getLocalTime(&realNow) && realNow.tm_hour >= 2) waitForFallBack = false;
+          }
+          if(!waitForFallBack) {
+            if(tod.minute()%2) relaySet(1); //odd minute
+            else relaySet(0); //even minute
+          }
+        #endif
+        #ifdef MODE_DATOR
+          relaySet(0); //midnight advance
+        #endif
+      } //end alarmFired(2)
+
+      if(rtc.alarmFired(1)) {
+        #ifdef MODE_DATOR
+          relaySet(1); //22h (or 21h/23h due to DST change we haven't caught yet)
+        #endif
+        //DST check for Cifra (Alarm1 fires nightly at 01:59)
+        //Compare tm_isdst now vs 2 hours from now: +1 = spring forward, -1 = fall back
+        #if defined(MODE_CIFRA) && defined(NETWORK_SSID)
+          if(!waitForFallBack) {
+            time_t now_t = time(NULL);
+            time_t later_t = now_t + 7200;
+            struct tm tmNow, tmLater;
+            localtime_r(&now_t, &tmNow);
+            localtime_r(&later_t, &tmLater);
+            int dstDelta = tmLater.tm_isdst - tmNow.tm_isdst;
+            if(dstDelta > 0) {
+              // Spring forward: rapid advance 62 steps (31 unset+set pairs)
+              // Delay-first, following the normal advance to :59 just performed by Alarm2
+              // Display ends at :01 (odd); DS3231 corrected to ~03:01 by NTP below
+              for(int i = 0; i < 31; i++) {
+                delay(2500); relaySet(0); //advance to even minute
+                delay(2500); relaySet(1); //advance to odd minute
+              }
+            } else if(dstDelta < 0) {
+              // Fall back: pause relay advances until real time reaches 02:00
+              waitForFallBack = true;
+            }
+          }
+        #endif
+        //NTP sync last, for both CIFRA and DATOR
+        ntpSync(); //set time per NTP and account for DST
+      } //end alarmFired(1)
+
+    #else //no DS3231 — timer-based wakeup; NETWORK_SSID required
+      struct tm timeinfo;
+      bool timeOk = getLocalTime(&timeinfo);
+      #ifdef SHOW_SERIAL
+        if(!timeOk) Serial.println(F("getLocalTime failed — skipping relay action and NTP."));
+      #endif
+
+      #ifdef MODE_CIFRA
+        // 1. Relay action: check fall-back wait, then toggle based on current minute
+        if(timeOk) {
+          if(waitForFallBack) {
+            if(timeinfo.tm_hour >= 2) waitForFallBack = false;
+          }
+          if(!waitForFallBack) {
+            if(timeinfo.tm_min % 2) relaySet(1); //odd minute
+            else relaySet(0); //even minute
+          }
+        }
+        // 2. DST check at :59 of every hour (uses ESP32 system clock, no NTP needed)
+        if(timeOk && timeinfo.tm_min == 59 && !waitForFallBack) {
+          time_t later_t = time(NULL) + 7200;
+          struct tm tmLater;
+          localtime_r(&later_t, &tmLater);
+          int dstDelta = tmLater.tm_isdst - timeinfo.tm_isdst;
+          if(dstDelta > 0) {
+            // Spring forward: rapid advance 62 steps (31 unset+set pairs), delay-first
+            for(int i = 0; i < 31; i++) {
+              delay(2500); relaySet(0); //advance to even minute
+              delay(2500); relaySet(1); //advance to odd minute
+            }
+          } else if(dstDelta < 0) {
+            waitForFallBack = true;
+          }
+        }
+        // 3. NTP sync at :55 (always last)
+        if(timeOk && timeinfo.tm_min == 55) {
+          ntpSync();
         }
       #endif
+
       #ifdef MODE_DATOR
-        //unset relay for advance state
-        #ifdef ENABLE_NEOPIXEL
-          pixels.fill(0x00FF00); //green
-          pixels.show();
-        #endif
-        digitalWrite(RELAY_UNSET_PIN,HIGH);
-        delay(RELAY_PULSE);
-        digitalWrite(RELAY_UNSET_PIN,LOW);
+        //Toggle relay before NTP sync, based on current (pre-sync) time.
+        //23:00–01:59: assume advance time (unset relay, date flips); otherwise: prepare time (set relay, ~2h warning).
+        if(timeOk) {
+          bool inAdvanceWindow = (timeinfo.tm_hour == 23 || timeinfo.tm_hour <= 1);
+          if(inAdvanceWindow) relaySet(0); //advance (unset relay, date flip)
+          else relaySet(1); //prepare (set relay, ~2h before advance)
+          ntpSync();
+        }
       #endif
-    } //end alarmFired(2)
-    
+
+    #endif //end USE_DS3231_RTC
+
   } //end woke from sleep
-  
-  //RTC debug:
-  // //Clear alarm signals
-  // rtc.clearAlarm(1);
-  // rtc.clearAlarm(2);
-  // Serial.print("After clear, ");
-  // if(digitalRead(WAKEUP_PIN)) Serial.print("Pin high. "); else Serial.print("Pin low. ");
-  // tod = rtc.now();
-  // Serial.print("Current time is ");
-  // if(tod.hour()<10) Serial.print("0"); Serial.print(tod.hour(),DEC); Serial.print(":");
-  // if(tod.minute()<10) Serial.print("0"); Serial.print(tod.minute(),DEC); Serial.print(":");
-  // if(tod.second()<10) Serial.print("0"); Serial.print(tod.second(),DEC);
-  // Serial.print(". ");
-  // if(rtc.alarmFired(1)) Serial.print("Alarm 1 still signaling. ");
-  // if(rtc.alarmFired(2)) Serial.print("Alarm 2 still signaling. ");
-  // Serial.println();
-  
+
 } //end setup()
 
 void loop() {
-  //Once setup is done, quiet down and go to sleep
-  rtc.clearAlarm(1);
-  rtc.clearAlarm(2);
+  // Cold start: handle serial time-entry before sleeping
+  #if defined(SHOW_SERIAL) && !defined(NETWORK_SSID)
+    if(esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED && inputStage < 99) {
+      if(Serial.available() > 0) {
+        String readString;
+        while(Serial.available()) {
+          char c = Serial.read();
+          if(c != '\n' && c != '\r') readString += c;
+          delay(2);
+        }
+        if(inputStage == 0) {
+          if(readString == "r") {
+            memset(&manualTime, 0, sizeof(manualTime));
+            manualTime.tm_isdst = -1; // let mktime determine DST from TZ rules
+            Serial.println(F("Enter year (e.g. 2026):"));
+            inputStage = 1;
+          }
+        } else {
+          int val = readString.toInt();
+          switch(inputStage) {
+            case 1: manualTime.tm_year = val - 1900; Serial.println(F("Enter month (1-12):")); inputStage++; break;
+            case 2: manualTime.tm_mon  = val - 1;    Serial.println(F("Enter day (1-31):")); inputStage++; break;
+            case 3: manualTime.tm_mday = val;         Serial.println(F("Enter hour (0-23):")); inputStage++; break;
+            case 4: manualTime.tm_hour = val;         Serial.println(F("Enter minute (0-59):")); inputStage++; break;
+            case 5: manualTime.tm_min  = val;         Serial.println(F("Enter second (0-59):")); inputStage++; break;
+            case 6: {
+              manualTime.tm_sec = val;
+              time_t epoch = mktime(&manualTime); // normalises fields; sets tm_isdst per TZ rules
+              struct timeval tv;
+              tv.tv_sec = epoch;
+              tv.tv_usec = 0;
+              settimeofday(&tv, NULL);
+              #ifdef USE_DS3231_RTC
+                struct tm *ti = localtime(&epoch);
+                rtc.adjust(DateTime(ti->tm_year+1900, ti->tm_mon+1, ti->tm_mday,
+                                    ti->tm_hour, ti->tm_min, ti->tm_sec));
+              #endif
+              char buf[32];
+              snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d%s",
+                manualTime.tm_year+1900, manualTime.tm_mon+1, manualTime.tm_mday,
+                manualTime.tm_hour, manualTime.tm_min, manualTime.tm_sec,
+                manualTime.tm_isdst > 0 ? " DST" : "");
+              Serial.print(F("Time set: ")); Serial.println(buf);
+              inputStage = 99;
+              break;
+            }
+          }
+        }
+      }
+      if(millis() - coldBootStart >= 20000) inputStage = 99;
+      return; // keep looping; falls through to sleep when inputStage reaches 99
+    }
+  #endif
+
+  //Once setup is done, clean up and go to sleep
+  #ifdef USE_DS3231_RTC
+    rtc.clearAlarm(1);
+    rtc.clearAlarm(2);
+  #endif
+
   digitalWrite(RELAY_UNSET_PIN,LOW);
   digitalWrite(RELAY_SET_PIN,LOW);
   gpio_hold_en(RELAY_UNSET_PIN);
   gpio_hold_en(RELAY_SET_PIN);
-  Serial.flush(); 
+
+  //For timer-based wakeup (no DS3231): calculate sleep duration to next event
+  #ifndef USE_DS3231_RTC
+    struct tm timeinfo;
+    uint64_t sleepSecs = 60; //fallback
+    if(getLocalTime(&timeinfo)) {
+      #ifdef MODE_CIFRA
+        //Sleep until the next minute boundary
+        sleepSecs = 60 - timeinfo.tm_sec;
+        if(sleepSecs == 0) sleepSecs = 60;
+      #endif
+      #ifdef MODE_DATOR
+        //Advance window (23:00–01:59): sleep until 22:00 (~22h). Otherwise: sleep until 00:00 (~2h).
+        bool inAdvanceWindow = (timeinfo.tm_hour == 23 || timeinfo.tm_hour <= 1);
+        int targetHour = inAdvanceWindow ? 22 : 0;
+        long currentSecs = (long)timeinfo.tm_hour * 3600 + (long)timeinfo.tm_min * 60 + (long)timeinfo.tm_sec;
+        long targetSecs = (long)targetHour * 3600;
+        long diffSecs = targetSecs - currentSecs;
+        if(diffSecs <= 0) diffSecs += 86400L;
+        sleepSecs = (uint64_t)diffSecs;
+      #endif
+    }
+    esp_sleep_enable_timer_wakeup(sleepSecs * 1000000ULL);
+  #endif
+
+  #ifdef SHOW_SERIAL
+    Serial.flush();
+  #endif
   esp_deep_sleep_start();
 }
 
-void rtcAdjust() {
-  #ifdef ENABLE_NTP_SYNC
-    //TODO sync NTP
-    //TODO adjust for DST: if current day involves a change, adjust RTC accordingly; CIFRA should advance/wait display 1hr
-    // //Start wifi TODO adapt to ESP32 QT Py
-    // for(int attempts=0; attempts<3; attempts++) {
-    //   Serial.print(F("\nConnecting to WiFi SSID "));
-    //   Serial.println(NETWORK_SSID);
-    //   WiFi.begin(NETWORK_SSID, NETWORK_PASS);
-    //   int timeout = 0;
-    //   while(WiFi.status()!=WL_CONNECTED && timeout<15) {
-    //     timeout++; delay(1000);
-    //   }
-    //   if(WiFi.status()==WL_CONNECTED){ //did it work?
-    //     //Serial.print(millis());
-    //     Serial.println(F("Connected!"));
-    //     //Serial.print(F("SSID: ")); Serial.println(WiFi.SSID());
-    //     Serial.print(F("Signal strength (RSSI): ")); Serial.print(WiFi.RSSI()); Serial.println(F(" dBm"));
-    //     Serial.print(F("Local IP: ")); Serial.println(WiFi.localIP());
-    //     break; //leave attempts loop
-    //   } else {
-    //     // #ifdef NETWORK2_SSID
-    //     //   Serial.print(F("\nConnecting to WiFi SSID "));
-    //     //   Serial.println(NETWORK2_SSID);
-    //     //   WiFi.begin(NETWORK2_SSID, NETWORK2_PASS);
-    //     //   int timeout = 0;
-    //     //   while(WiFi.status()!=WL_CONNECTED && timeout<15) {
-    //     //     timeout++; delay(1000);
-    //     //   }
-    //     //   if(WiFi.status()==WL_CONNECTED){ //did it work?
-    //     //     //Serial.print(millis());
-    //     //     Serial.println(F("Connected!"));
-    //     //     //Serial.print(F("SSID: ")); Serial.println(WiFi.SSID());
-    //     //     Serial.print(F("Signal strength (RSSI): ")); Serial.print(WiFi.RSSI()); Serial.println(F(" dBm"));
-    //     //     Serial.print(F("Local IP: ")); Serial.println(WiFi.localIP());
-    //     //     break; //leave attempts loop
-    //     //   }
-    //     // #endif
-    //   }
-    // }
-    // if(WiFi.status()!=WL_CONNECTED) {
-    //   Serial.println(F("Wasn't able to connect."));
-    //   displayError(F("Couldn't connect to WiFi."));
-    //   //Close unneeded things
-    //   WiFi.disconnect(true);
-    //   WiFi.mode(WIFI_OFF);
-    //   return;
-    // }
-    // 
-    // // Get time from timeserver - used when going into deep sleep again to ensure that we wake at the right hour
-    // struct tm timeinfo; //may need to be outside fn
-    // //(these are part of the espressif arduino-esp32 core)
-    // configTime(TZ_OFFSET_SEC, DST_OFFSET_SEC, NTP_HOST);
-    // if(!getLocalTime(&timeinfo)){
-    //   Serial.println("Failed to obtain time");
-    // }
-    // //example usage
-    // //todInSec = timeinfo.tm_hour*60*60 + timeinfo.tm_min*60 + timeinfo.tm_sec;
-    // 
-    // //rtcTakeSnap
-    // //rtcGet functions pull from this snapshot - to ensure that code works off the same timestamp
-    // tod = rtc.now();
-    // 
-    // //rtcSetTime
-    // rtcTakeSnap();
-    // rtc.adjust(DateTime(tod.year(),tod.month(),tod.day(),h,m,s));
-    // 
-    // //rtcSetDate
-    // //will cause the clock to fall slightly behind since it discards partial current second
-    // rtcTakeSnap();
-    // rtc.adjust(DateTime(y,m,d,tod.hour(),tod.minute(),tod.second()));
-    // 
-    // //rtcSetHour
-    // //will cause the clock to fall slightly behind since it discards partial current second
-    // rtcTakeSnap();
-    // rtc.adjust(DateTime(tod.year(),tod.month(),tod.day(),h,tod.minute(),tod.second()));
-    // 
-    //TODO send warning when battery is low ifdef BATTERY_MONITOR_PIN
-    //TODO float battLevel = analogRead(35) / 4096.0 * 7.445;
-    // if(battLevel < 4) {
-    //   //TODO make web request to send warning about low battery while we have WiFi going
-    //   HTTPClient http; //may need to be outside fn
-    //   //Get data and attempt to parse it
-    //   //This can fail two ways: httpReturnCode != 200, or parse fails
-    //   //In either case, we will attempt to pull it anew
-    //   int httpReturnCode;
-    //   bool parseSuccess = false;
-    // 
-    //   for(int attempts=0; attempts<3; attempts++) {
-    //     Serial.print(F("\nConnecting to data source "));
-    //     Serial.print(DATA_SRC);
-    //     Serial.print(F(" at tod "));
-    //     Serial.println(todInSec,DEC);
-    // //     std::string targetURL(DATA_SRC);
-    // //     std::string todInSecStr = std::to_string(todInSec);
-    //     http.begin(String(DATA_SRC)+"&tod="+String(todInSec));
-    //     httpReturnCode = http.GET();
-    //     if(httpReturnCode==200) { //got data, let's try to parse
-    //       //hooray
-    //     }
-    //   }
-    // } //end if batt level too low
-    // 
-    // //Close unneeded things
-    // http.end();
-    // WiFi.disconnect(true);
-    // WiFi.mode(WIFI_OFF);
-  #endif
+void relaySet(bool state) {
+  if(state==1) {
+    //set relay for Dator prepare at 22h or Cifra odd minute
+    #ifdef ENABLE_NEOPIXEL
+      pixels.fill(0xFF0000); //red
+      pixels.show();
+    #endif
+    digitalWrite(RELAY_SET_PIN,HIGH);
+    delay(RELAY_PULSE);
+    digitalWrite(RELAY_SET_PIN,LOW);
+  }
+  if(state==0) {
+    //unset relay for Dator advance at midnight or Cifra even minute
+    #ifdef ENABLE_NEOPIXEL
+      pixels.fill(0x00FF00); //green
+      pixels.show();
+    #endif
+    digitalWrite(RELAY_UNSET_PIN,HIGH);
+    delay(RELAY_PULSE);
+    digitalWrite(RELAY_UNSET_PIN,LOW);
+  }
+}
+
+void ntpSync() {
+  //cf. similar function in autoregulator project
+  #ifdef NETWORK_SSID
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(NETWORK_SSID, NETWORK_PASS);
+
+    bool wifiOk = false;
+    for(int timeout=0; timeout<15 && !wifiOk; timeout++) {
+      delay(1000);
+      if(WiFi.status()==WL_CONNECTED) wifiOk = true;
+    }
+
+    if(wifiOk) {
+      #ifdef ENABLE_NEOPIXEL
+        pixels.fill(0x0000FF); //blue - wifi success
+        pixels.show();
+      #endif
+      #ifdef SHOW_SERIAL
+        Serial.println(F("WiFi connected."));
+        Serial.print(F("Signal strength (RSSI): ")); Serial.print(WiFi.RSSI()); Serial.println(F(" dBm"));
+      #endif
+
+      #ifdef SHOW_SERIAL
+        Serial.print(F("Syncing to NTP..."));
+      #endif
+      //Reset sync status before starting so we know a *fresh* NTP packet was received.
+      //Without this, the ESP32 hardware RTC (which persists through deep sleep) makes
+      //sntp_get_sync_status() appear complete and getLocalTime() return stale time immediately.
+      sntp_set_sync_status(SNTP_SYNC_STATUS_RESET);
+      //configTzTime starts the SNTP process (non-blocking); POSIX TZ string handles DST automatically.
+      #ifdef NTP_HOST2
+        configTzTime(TIME_ZONE, NTP_HOST, NTP_HOST2);
+      #else
+        configTzTime(TIME_ZONE, NTP_HOST);
+      #endif
+      //Poll for sync completion rather than using getLocalTime(), which returns true
+      //based on year > 2016 — not on whether a fresh packet was actually received.
+      bool ntpOk = false;
+      unsigned long ntpWaitStart = millis();
+      while((millis() - ntpWaitStart) < 30000) {
+        if(sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+          ntpOk = true;
+          break;
+        }
+        delay(100);
+      }
+
+      if(ntpOk) {
+        #ifdef SHOW_SERIAL
+          Serial.println(F(" synced."));
+        #endif
+        //Snapshot gettimeofday() so tv_usec gives the exact sub-second offset with no
+        //second-boundary race. Re-derive broken-down time from tv.tv_sec (already TZ-adjusted
+        //by configTzTime) so the time is consistent with tv_usec.
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        struct tm *ti = localtime(&tv.tv_sec);
+
+        #ifdef USE_DS3231_RTC
+          //Update DS3231 from NTP (tm_year is years since 1900; tm_mon is 0-based)
+          rtc.adjust(DateTime(ti->tm_year + 1900, ti->tm_mon + 1, ti->tm_mday,
+                              ti->tm_hour, ti->tm_min, ti->tm_sec));
+          #ifdef SHOW_SERIAL
+            char buf[20];
+            snprintf(buf, sizeof(buf), "%02d:%02d:%02d", ti->tm_hour, ti->tm_min, ti->tm_sec);
+            Serial.print(F("RTC updated: ")); Serial.println(buf);
+          #endif
+        #else
+          //No DS3231 — the ESP32 system time is already set by configTzTime/SNTP
+          #ifdef SHOW_SERIAL
+            char buf[20];
+            snprintf(buf, sizeof(buf), "%02d:%02d:%02d", ti->tm_hour, ti->tm_min, ti->tm_sec);
+            Serial.print(F("System time: ")); Serial.println(buf);
+          #endif
+        #endif
+
+        // TODO send warning when battery is low ifdef BATTERY_MONITOR_PIN
+        // TODO float battLevel = analogRead(35) / 4096.0 * 7.445;
+        // if(battLevel < 4) {
+        //   //TODO make web request to send warning about low battery while we have WiFi going
+        // }
+      } else {
+        #ifdef SHOW_SERIAL
+          Serial.println(F(" failed."));
+        #endif
+        #ifdef ENABLE_NEOPIXEL
+          pixels.fill(0xFF5500); //orange - NTP failed (WiFi ok but no time)
+          pixels.show();
+          delay(1000);
+        #endif
+      }
+
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_OFF);
+    } else {
+      #ifdef ENABLE_NEOPIXEL
+        pixels.fill(0xFF0000); //red - wifi failed
+        pixels.show();
+        delay(1000);
+      #endif
+      #ifdef SHOW_SERIAL
+        Serial.println(F("WiFi connection failed."));
+      #endif
+    }
+  #endif //NETWORK_SSID
 }
