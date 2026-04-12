@@ -1,4 +1,17 @@
 .DS_Store
+scratch*
+
+#User config (copy from include/config-example.h)
+include/config.h
+
+#Arduino IDE
 debug_custom.json
 debug.cfg
 esp32s2.svd
+
+#PlatformIO
+.pio
+.vscode/.browse.c_cpp.db*
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch
