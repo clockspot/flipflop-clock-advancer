@@ -4,7 +4,7 @@
 
 This project is designed to drive Solari Udine 120 series flip clocks (Cifra and Dator/MD). 
 
-These use a pair of SPDT switches to drive the display: when the “start” switch is toggled, a DC motor runs until it toggles the “stop” switch. Here, we replace the “start” switch with a **latching SPDT relay** toggled by an **ESP32 microcontroller.**
+These clocks use a pair of SPDT switches to drive the display: when the “start” switch is toggled, a DC motor runs until it toggles the “stop” switch. Here, we replace the “start” switch with a **latching SPDT relay** toggled by an **ESP32 microcontroller.**
 
 * **Cifra mode:** cycles relay every two minutes (set for odd minutes, unset for even ones), to drive a Cifra or Cifra+Dator pair.
 * **Dator mode:** cycles relay once a day (set to prepare, unset to advance), to drive a Dator on its own.[^1]
@@ -13,6 +13,15 @@ These use a pair of SPDT switches to drive the display: when the “start” swi
 * **Automatic DST correction** (if specified).
 * **Deep sleep** for maximum power efficiency, to facilitate running on batteries. [See hardware details below.](#hardware)
 
+## Contents
+
+* [Hardware](#hardware)
+  * [QT Py connections](#qt-py-connections)
+  * [Power connections](#power-connections)
+  * [Cifra / Cifra+Dator connections](#cifra--cifradator-connections)
+  * [Dator-only connections](#dator-only-connections)
+* [Software](#software)
+
 
 ## Hardware
 
@@ -20,7 +29,7 @@ These use a pair of SPDT switches to drive the display: when the “start” swi
 
 My implementation uses hardware selections from Adafruit: a [QT Py ESP32-S2](https://www.adafruit.com/product/5325) connected to a [latching SPDT relay](https://www.adafruit.com/product/2923) and optional [DS3231 RTC](https://www.adafruit.com/product/5188).
 
-#### QT Py connections
+### QT Py connections
 
 * A0 (GPIO 18) to relay UNSET pin
 * A1 (GPIO 17) to relay SET pin
@@ -31,13 +40,13 @@ My implementation uses hardware selections from Adafruit: a [QT Py ESP32-S2](htt
   * If using STEMMA connector, include `#define Wire Wire1` in config file to use the STEMMA I2C interface (SDA1/SCL1) instead of the regular one
 * GND (via pin and/or STEMMA connector, to USB or BFF) to DS3231 GND and relay GND
 
-#### Power connections
+### Power connections
 
 You can power these 5V components via USB into the QT Py, or with the [QT Py BFF power supply/charger](https://www.adafruit.com/product/5397) and a [LiPo battery](https://www.adafruit.com/product/1781) – in which case you can connect USB periodically to charge the battery (yellow LED goes out when fully charged), or to provide backup running power while you swap out the battery so the clock doesn’t lose time.
 
 The Cifra/Dator drive motors can share this power (by connecting them to the USB/BFF 5V and GND), but I found they were only truly reliable at a higher voltage. If you use the original 9V power supply (or similar) for the motors, you can power the 5V components off this with a [buck converter](https://www.adafruit.com/product/4739).
 
-#### Cifra / Cifra+Dator connections
+### Cifra / Cifra+Dator connections
 
 * Connect the relay in place of the “start” switch:
   * COM to white 
@@ -58,7 +67,7 @@ My original Cifra install: battery (left) powering ESP32+BFF (right), connected 
 ![IMG_4332a](https://user-images.githubusercontent.com/9385318/219879924-d54c484a-eb96-41bc-807c-217640f5a581.jpeg)
 The standard connection between the Cifra (left) and Dator (right), comprising “prepare“ (red) and “advance“ (yellow) wires and a ground (black) wire.
 
-#### Dator-only connections
+### Dator-only connections
 
 * Connect the relay as follows:
   * COM to [power](#power-connections)
@@ -68,25 +77,36 @@ The standard connection between the Cifra (left) and Dator (right), comprising �
 
 ## Software
 
-* Duplicate `configs/example.h` and edit to suit.
-* Specify your config file in `flipflop.h`.
-* Compile and upload the sketch to the ESP32 with the Arduino IDE ([see Adafruit guide](https://learn.adafruit.com/adafruit-qt-py-esp32-s2/arduino-ide-setup)).
-* To upload a new version of the sketch, reboot the ESP32; the sketch will wait for at least 20 seconds before sleeping to give you a chance to start the upload.
+This is a [PlatformIO](https://docs.platformio.org/en/stable/boards/espressif32/adafruit_qtpy_esp32s2.html) project with main code in `src/`. An `.ino` file is provided for [Arduino IDE](https://learn.adafruit.com/adafruit-qt-py-esp32-s2/arduino-ide-setup) compatibility.
 
-#### On cold boot
+### Compilation and upload
 
-* If using NTP sync, [watch the LED](#led-indications) to confirm successful sync.
-* If not using NTP sync, set the RTC manually by connecting via serial and entering 'r' within 20 seconds.
-* [Manually set the displays](#manual-setting) to the correct time and date. The ESP32 should keep them up to date from there.
+* Copy `include/config-example.h` to `include/config.h` and edit to suit. (`config.h` is gitignored so your local settings won't be committed.)
+* Compile and upload the sketch to the ESP32 with PlatformIO or the Arduino IDE.
+* Once the sketch is uploaded, on cold boot, the ESP32 will wait for at least 20 seconds before sleeping (with the LED on) to give you the opportunity to start uploading a new version.
+
+### Operation
+
+* If you are using NTP sync:
+  * On cold boot (initial startup), [watch the LED](#led-indications) or serial console to confirm successful initial sync.
+  * After that, NTP sync takes place daily, after the clock has advanced:
+    * in Cifra mode, at 01:59 (or hourly at :59 if no DS3231 is in use);
+    * in Dator mode, at 22:00 (at “prepare” time).
+* If you are not using NTP sync:
+  * On cold boot, set the RTC manually via the serial console (must begin within 20 seconds of boot).
+* If your `config.h` specifies a `TIME_ZONE` with a DST offset:
+  * In Cifra mode, at 01:59 on DST change day, the clock will rapidly advance one hour or stop for one hour.
+  * In Dator mode, the DST change is noted at “prepare” time so that it advances at the correct midnight.
+* After cold boot, once the ESP32 goes to sleep (LED off), [manually set the clock(s)](#manual-setting) to the correct time and date. The ESP32 should keep them up to date from there.
 
 #### LED indications
 
 * On cold boot
   * Teal: Successful boot
 * During NTP sync
-  * Blue: Wi-Fi connected; attempting NTP sync
   * Red: Wi-Fi connection failed
-  * Orange: Wi-Fi connected but NTP sync failed
+  * Blue: Wi-Fi connected; attempting NTP sync
+  * Orange: NTP sync failed
   * Green: NTP sync successful (cold boot only)
 * On relay toggle
   * Red flash: Set
@@ -94,28 +114,18 @@ The standard connection between the Cifra (left) and Dator (right), comprising �
 
 ## Manual setting
 
-#### Cifra 120
+### Cifra 120
 
 * The hour and minute spindles are ratcheted, so you can carefully physically advance them in a forward direction (numbers advancing). 
   * I find this is most easily done by removing the back case and cupping your hand around the flaps, so that you can push on multiple flaps as a unit to move the spindle.
 * Alternatively, bridge the center pins in the connector to advance the minutes (in two-minute increments).
 * A Dator can be connected to the Cifra (see photo above) and will run as normal.
 
-#### Dator 120
+### Dator 120
 
 * Remove the case and find the knobs and ratchets on the right-hand side.
 * Date: Spin the brass knob clockwise. The weekday will advance too.
 * Weekday: Turn the small ratchet wheel at bottom counterclockwise (you can use the ratchet to advance it, but if the clock is powered, the date will advance too).
 * Month: Pull on the small gray gear at top to unlock the white gear. Turn that gear counterclockwise to advance the months, while watching the tab on the white gear between the month and date displays: this tracks the leap year cycle. When you reach January while the tab is in the downward (6 o’clock) position, you are in a leap year (2020, 2024, 2028, 2032) – go forward from there until you reach the correct month in the correct year.
-
-## TODO
-
-* ~~Essential functionality with RTC alarms~~
-* ~~Retrieve NTP time~~
-* ~~Correct for DST via advance/wait~~
-* Send warning when battery is low
-* Power I2C via GPIO pin to force DS3231 to run off its own battery
-* RTClib has native support for alternate I2C interface; use this instead of `#define Wire Wire1`
-* It may be possible to connect an external 32kHz crystal
 
 [^1]: This is similar in concept to the [warning period in striking/chiming clocks](https://mb.nawcc.org/wiki/Encyclopedia-Subjects/Clock-Repair/Purpose-of-strike-and-chime-warning).

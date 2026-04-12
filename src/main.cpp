@@ -2,11 +2,19 @@
 // https://github.com/clockspot/flipflop-clock-advancer
 // Sketch by Luke McKenzie (luke@theclockspot.com)
 
-#include <arduino.h>
-#include "flipflop.h" //specifies config
+#include <Arduino.h>
 #include "esp_sleep.h"
-
 #include "time.h" //struct tm, time_t, localtime_r(), getLocalTime() — always needed for DST check and no-DS3231 wakeup timing
+
+#if __has_include("include/config.h")
+  #include "include/config.h"
+#else
+  #error "include/config.h not found — copy include/config-example.h to include/config.h and edit to suit."
+#endif
+
+// Forward declarations
+void relaySet(bool state);
+void ntpSync();
 
 #ifdef NETWORK_SSID
   //see https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/Time/SimpleTime/SimpleTime.ino
@@ -42,7 +50,8 @@
 #endif
 
 #if defined(SHOW_SERIAL) && !defined(NETWORK_SSID)
-  int inputStage = 0; // serial menu state on cold boot: 0=waiting, 1-6=date/time entry, 99=done
+  //Used only during cold boot.
+  int inputStage = 0; // serial menu state: 0=waiting, 1-6=date/time entry, 99=done
   struct tm manualTime; // accumulates fields entered via serial
   unsigned long coldBootStart = 0; // millis() when cold-boot prompt was shown
 #endif
@@ -81,12 +90,8 @@ void setup(){
     pixels.setBrightness(20); // not so bright
   #endif
 
-  #ifdef SHOW_SERIAL
-    Serial.begin(115200);
-  #endif
-
   // Set timezone from config so DST rules apply to mktime/localtime even without NTP
-  #if defined(TIME_ZONE) && !defined(NETWORK_SSID)
+  #ifdef TIME_ZONE
     setenv("TZ", TIME_ZONE, 1);
     tzset();
   #endif
@@ -104,6 +109,18 @@ void setup(){
     #ifdef ENABLE_NEOPIXEL
       pixels.fill(0x00FFFF); //teal to indicate hello world
       pixels.show();
+    #endif
+
+    #if defined(SHOW_SERIAL)
+      //Waiting until this point to begin Serial ensures
+      //Serial messsages will only be sent during cold boot.
+      Serial.begin(115200);
+      delay(2000); //allow serial monitor to connect
+      Serial.println("Hello from flipflop-clock-advancer!");
+      #if !defined(NETWORK_SSID)
+        Serial.println(F("Enter 'r' to set time manually (20s)."));
+        coldBootStart = millis();
+      #endif
     #endif
 
     //Attempt to sync to NTP; without NETWORK_SSID, loop() prompts for manual time entry via serial
@@ -128,12 +145,7 @@ void setup(){
       #endif
     #endif
 
-    #if defined(SHOW_SERIAL) && !defined(NETWORK_SSID)
-      delay(2000); //allow serial monitor to connect
-      Serial.println(F("Enter 'r' to set time manually (20s)."));
-      coldBootStart = millis();
-    #endif
-    //We do not advance the clock at this point; it is assumed to already be at position 00:00 / even minute / dator advance
+    //We do not advance the clock at cold boot; it is assumed to already be set correctly
 
   } //end cold start
   else { //woke from sleep
@@ -194,13 +206,10 @@ void setup(){
     #else //no DS3231 — timer-based wakeup; NETWORK_SSID required
       struct tm timeinfo;
       bool timeOk = getLocalTime(&timeinfo);
-      #ifdef SHOW_SERIAL
-        if(!timeOk) Serial.println(F("getLocalTime failed — skipping relay action and NTP."));
-      #endif
+      if(timeOk) {
 
-      #ifdef MODE_CIFRA
-        // 1. Relay action: check fall-back wait, then toggle based on current minute
-        if(timeOk) {
+        #ifdef MODE_CIFRA
+          // 1. Relay action: check fall-back wait, then toggle based on current minute
           if(waitForFallBack) {
             if(timeinfo.tm_hour >= 2) waitForFallBack = false;
           }
@@ -208,39 +217,41 @@ void setup(){
             if(timeinfo.tm_min % 2) relaySet(1); //odd minute
             else relaySet(0); //even minute
           }
-        }
-        // 2. DST check at :59 of every hour (uses ESP32 system clock, no NTP needed)
-        if(timeOk && timeinfo.tm_min == 59 && !waitForFallBack) {
-          time_t later_t = time(NULL) + 7200;
-          struct tm tmLater;
-          localtime_r(&later_t, &tmLater);
-          int dstDelta = tmLater.tm_isdst - timeinfo.tm_isdst;
-          if(dstDelta > 0) {
-            // Spring forward: rapid advance 62 steps (31 unset+set pairs), delay-first
-            for(int i = 0; i < 31; i++) {
-              delay(2500); relaySet(0); //advance to even minute
-              delay(2500); relaySet(1); //advance to odd minute
+          // 2. DST check at :59 of every hour (uses ESP32 system clock, no NTP needed)
+          if(timeinfo.tm_min == 59 && !waitForFallBack) {
+            time_t later_t = time(NULL) + 7200;
+            struct tm tmLater;
+            localtime_r(&later_t, &tmLater);
+            int dstDelta = tmLater.tm_isdst - timeinfo.tm_isdst;
+            if(dstDelta > 0) {
+              // Spring forward: rapid advance 62 steps (31 unset+set pairs), delay-first
+              for(int i = 0; i < 31; i++) {
+                delay(2500); relaySet(0); //advance to even minute
+                delay(2500); relaySet(1); //advance to odd minute
+              }
+            } else if(dstDelta < 0) {
+              waitForFallBack = true;
             }
-          } else if(dstDelta < 0) {
-            waitForFallBack = true;
           }
-        }
-        // 3. NTP sync at :55 (always last)
-        if(timeOk && timeinfo.tm_min == 55) {
-          ntpSync();
-        }
-      #endif
+          // 3. NTP sync at :55 (always last)
+          if(timeinfo.tm_min == 55) {
+            ntpSync();
+          }
+        #endif
 
-      #ifdef MODE_DATOR
-        //Toggle relay before NTP sync, based on current (pre-sync) time.
-        //23:00–01:59: assume advance time (unset relay, date flips); otherwise: prepare time (set relay, ~2h warning).
-        if(timeOk) {
+        #ifdef MODE_DATOR
+          //Toggle relay before NTP sync, based on current (pre-sync) time.
+          //23:00–01:59: assume advance time (unset relay, date flips); otherwise: prepare time (set relay, ~2h warning).
           bool inAdvanceWindow = (timeinfo.tm_hour == 23 || timeinfo.tm_hour <= 1);
           if(inAdvanceWindow) relaySet(0); //advance (unset relay, date flip)
-          else relaySet(1); //prepare (set relay, ~2h before advance)
-          ntpSync();
-        }
-      #endif
+          else {
+            relaySet(1); //prepare (set relay, ~2h before advance)
+            ntpSync();
+          }
+        #endif
+      
+      } //end timeOk
+      //TODO: if !timeOk, log it via WiFi?
 
     #endif //end USE_DS3231_RTC
 
@@ -252,53 +263,92 @@ void loop() {
   // Cold start: handle serial time-entry before sleeping
   #if defined(SHOW_SERIAL) && !defined(NETWORK_SSID)
     if(esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED && inputStage < 99) {
-      if(Serial.available() > 0) {
-        String readString;
+      // Timeout at stage 0: sleep if 'r' not entered within 20 seconds
+      if(inputStage == 0 && millis() - coldBootStart >= 20000) {
+        inputStage = 99;
+      } else {
+        // Accumulate characters into inputBuffer; process only on newline
+        static String inputBuffer;
         while(Serial.available()) {
           char c = Serial.read();
-          if(c != '\n' && c != '\r') readString += c;
-          delay(2);
-        }
-        if(inputStage == 0) {
-          if(readString == "r") {
-            memset(&manualTime, 0, sizeof(manualTime));
-            manualTime.tm_isdst = -1; // let mktime determine DST from TZ rules
-            Serial.println(F("Enter year (e.g. 2026):"));
-            inputStage = 1;
-          }
-        } else {
-          int val = readString.toInt();
-          switch(inputStage) {
-            case 1: manualTime.tm_year = val - 1900; Serial.println(F("Enter month (1-12):")); inputStage++; break;
-            case 2: manualTime.tm_mon  = val - 1;    Serial.println(F("Enter day (1-31):")); inputStage++; break;
-            case 3: manualTime.tm_mday = val;         Serial.println(F("Enter hour (0-23):")); inputStage++; break;
-            case 4: manualTime.tm_hour = val;         Serial.println(F("Enter minute (0-59):")); inputStage++; break;
-            case 5: manualTime.tm_min  = val;         Serial.println(F("Enter second (0-59):")); inputStage++; break;
-            case 6: {
-              manualTime.tm_sec = val;
-              time_t epoch = mktime(&manualTime); // normalises fields; sets tm_isdst per TZ rules
-              struct timeval tv;
-              tv.tv_sec = epoch;
-              tv.tv_usec = 0;
-              settimeofday(&tv, NULL);
-              #ifdef USE_DS3231_RTC
-                struct tm *ti = localtime(&epoch);
-                rtc.adjust(DateTime(ti->tm_year+1900, ti->tm_mon+1, ti->tm_mday,
-                                    ti->tm_hour, ti->tm_min, ti->tm_sec));
-              #endif
-              char buf[32];
-              snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d%s",
-                manualTime.tm_year+1900, manualTime.tm_mon+1, manualTime.tm_mday,
-                manualTime.tm_hour, manualTime.tm_min, manualTime.tm_sec,
-                manualTime.tm_isdst > 0 ? " DST" : "");
-              Serial.print(F("Time set: ")); Serial.println(buf);
-              inputStage = 99;
-              break;
+          if(c == '\r') continue; // ignore CR (Windows line endings)
+          if(c == '\n') {
+            String line = inputBuffer;
+            inputBuffer = "";
+
+            if(inputStage == 0) {
+              if(line == "r") {
+                memset(&manualTime, 0, sizeof(manualTime));
+                manualTime.tm_isdst = -1; // let mktime determine DST from TZ rules
+                Serial.println(F("Enter year (e.g. 2026):"));
+                inputStage = 1;
+              }
+              // any other input at stage 0 is ignored; timeout handles exit
+            } else {
+              // Validate: all digits, non-empty
+              bool valid = line.length() > 0;
+              for(unsigned int i = 0; i < line.length(); i++) {
+                if(!isDigit(line[i])) { valid = false; break; }
+              }
+              int val = valid ? line.toInt() : -1;
+
+              struct { int lo; int hi; const __FlashStringHelper *prompt; } fields[] = {
+                {2000, 9999, F("Enter year (e.g. 2026):")},
+                {1,   12,   F("Enter month (1-12):")},
+                {1,   31,   F("Enter day (1-31):")},
+                {0,   23,   F("Enter hour (0-23):")},
+                {0,   59,   F("Enter minute (0-59):")},
+                {0,   59,   F("Enter second (0-59):")},
+              };
+              int idx = inputStage - 1; // fields[0] = stage 1 (year)
+              if(!valid || val < fields[idx].lo || val > fields[idx].hi) {
+                Serial.print(F("Invalid — ")); Serial.println(fields[idx].prompt);
+              } else {
+                switch(inputStage) {
+                  case 1: manualTime.tm_year = val - 1900; break;
+                  case 2: manualTime.tm_mon  = val - 1;    break;
+                  case 3: manualTime.tm_mday = val;        break;
+                  case 4: manualTime.tm_hour = val;        break;
+                  case 5: manualTime.tm_min  = val;        break;
+                  case 6: manualTime.tm_sec  = val;        break;
+                }
+                if(inputStage < 6) {
+                  inputStage++;
+                  Serial.println(fields[inputStage - 1].prompt);
+                } else {
+                  // All fields collected — commit
+                  time_t epoch = mktime(&manualTime); // normalises fields; sets tm_isdst per TZ rules
+                  if(epoch == (time_t)-1) {
+                    Serial.println(F("Date/time invalid — please start again. Enter year (e.g. 2026):"));
+                    memset(&manualTime, 0, sizeof(manualTime));
+                    manualTime.tm_isdst = -1;
+                    inputStage = 1;
+                  } else {
+                    struct timeval tv;
+                    tv.tv_sec = epoch;
+                    tv.tv_usec = 0;
+                    settimeofday(&tv, NULL);
+                    #ifdef USE_DS3231_RTC
+                      struct tm *ti = localtime(&epoch);
+                      rtc.adjust(DateTime(ti->tm_year+1900, ti->tm_mon+1, ti->tm_mday,
+                                          ti->tm_hour, ti->tm_min, ti->tm_sec));
+                    #endif
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d%s",
+                      manualTime.tm_year+1900, manualTime.tm_mon+1, manualTime.tm_mday,
+                      manualTime.tm_hour, manualTime.tm_min, manualTime.tm_sec,
+                      manualTime.tm_isdst > 0 ? " DST" : "");
+                    Serial.print(F("Time set: ")); Serial.println(buf);
+                    inputStage = 99;
+                  }
+                }
+              }
             }
+          } else {
+            inputBuffer += c;
           }
         }
       }
-      if(millis() - coldBootStart >= 20000) inputStage = 99;
       return; // keep looping; falls through to sleep when inputStage reaches 99
     }
   #endif
@@ -369,6 +419,12 @@ void relaySet(bool state) {
 
 void ntpSync() {
   #ifdef NETWORK_SSID
+    #ifdef SHOW_SERIAL
+      //These messages are only sent out if Serial was begun, i.e. during cold boot.
+      Serial.print(F("Connecting to WiFi SSID "));
+      Serial.print(NETWORK_SSID);
+      Serial.println(F("..."));
+    #endif
     WiFi.mode(WIFI_STA);
     WiFi.begin(NETWORK_SSID, NETWORK_PASS);
 
