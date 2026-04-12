@@ -22,8 +22,8 @@ My implementation uses hardware selections from Adafruit: a [QT Py ESP32-S2](htt
 
 #### QT Py connections
 
-* A0 (GPIO 18) to relay SET pin
-* A1 (GPIO 17) to relay UNSET pin
+* A0 (GPIO 18) to relay UNSET pin
+* A1 (GPIO 17) to relay SET pin
 * A2 (GPIO 9) to BFF if applicable (and enable `BATTERY_MONITOR_PIN` in config)
 * A3 (GPIO 8) to optional DS3231 SQW (this is the interrupt pin the DS3231 uses to wake up the ESP32)
 * 3V (via pin or STEMMA connector) to DS3231 3V/VIN and relay 3V/VIN
@@ -35,17 +35,17 @@ My implementation uses hardware selections from Adafruit: a [QT Py ESP32-S2](htt
 
 You can power these 5V components via USB into the QT Py, or with the [QT Py BFF power supply/charger](https://www.adafruit.com/product/5397) and a [LiPo battery](https://www.adafruit.com/product/1781) – in which case you can connect USB periodically to charge the battery (yellow LED goes out when fully charged), or to provide backup running power while you swap out the battery so the clock doesn’t lose time.
 
-You may find 5V is enough to power the Cifra/Dator drive motors as well (per connections below), but I found they were only reliable at a higher voltage. If you use the original 9V power supply (or similar) for the motors, you can power the 5V components off this with a [buck converter](https://www.adafruit.com/product/4739).
+The Cifra/Dator drive motors can share this power (by connecting them to the USB/BFF 5V and GND), but I found they were only truly reliable at a higher voltage. If you use the original 9V power supply (or similar) for the motors, you can power the 5V components off this with a [buck converter](https://www.adafruit.com/product/4739).
 
-#### Cifra connections
+#### Cifra / Cifra+Dator connections
 
 * Connect the relay in place of the “start” switch:
-  * COM to white
+  * COM to white 
   * NC to blue/white, NO to brown/white
     * If it falls behind by exactly one minute (odd vs. even mismatch), swap these connections or swap your A0/A1 pins.
-* To try [powering](#power-connections) the Cifra/Dator motor(s) off the USB/BFF 5V, connect it to the low-voltage wires in place of the original power supply:
-  * USB/BFF 5V to red/white wire
-  * USB/BFF GND to black wire
+* Connect Cifra's low-voltage power wires to the original power supply, the 5V/GND from USB/BFF ([with caveat](#power-connections)), or another DC power source:
+  * Red/white to power
+  * Black to ground
 * If you have both a Cifra and a Dator:
   * Connect three pins in the rear connector as shown below.
 
@@ -58,27 +58,39 @@ My original Cifra install: battery (left) powering ESP32+BFF (right), connected 
 ![IMG_4332a](https://user-images.githubusercontent.com/9385318/219879924-d54c484a-eb96-41bc-807c-217640f5a581.jpeg)
 The standard connection between the Cifra (left) and Dator (right), comprising “prepare“ (red) and “advance“ (yellow) wires and a ground (black) wire.
 
-#### Dator connections
+#### Dator-only connections
 
 * Connect the relay as follows:
-  * COM to + (below)
-  * NC to Dator’s “prepare” wire, NO to “advance” wire
-    * If the Dator “advances” before “preparing”, swap these connections or swap your A0/A1 pins.
-* To try [powering](#power-connections) the Dator motor off the USB/BFF 5V:
-  * USB/BFF 5V to relay COM
-  * USB/BFF GND to black ground wire
+  * COM to [power](#power-connections)
+  * NC to Dator’s “prepare” wire and NO to “advance” wire
+    * If the Dator advances 1–3 hours before midnight, swap these connections or swap your A0/A1 pins.
+* Connect Dator’s black ground wire to [ground](#power-connections)
 
 ## Software
 
 * Duplicate `configs/example.h` and edit to suit.
 * Specify your config file in `flipflop.h`.
 * Compile and upload the sketch to the ESP32 with the Arduino IDE ([see Adafruit guide](https://learn.adafruit.com/adafruit-qt-py-esp32-s2/arduino-ide-setup)).
+* To upload a new version of the sketch, reboot the ESP32; the sketch will wait for at least 20 seconds before sleeping to give you a chance to start the upload.
 
-## First run
+#### On cold boot
 
-* If using NTP sync, watch the LED at startup to confirm that it successfully connects to your Wi-Fi and can reach the NTP server.
-* If not using NTP sync, connect via serial and enter 'r' to set the RTC manually.
+* If using NTP sync, [watch the LED](#led-indications) to confirm successful sync.
+* If not using NTP sync, set the RTC manually by connecting via serial and entering 'r' within 20 seconds.
 * [Manually set the displays](#manual-setting) to the correct time and date. The ESP32 should keep them up to date from there.
+
+#### LED indications
+
+* On cold boot
+  * Teal: Successful boot
+* During NTP sync
+  * Blue: Wi-Fi connected; attempting NTP sync
+  * Red: Wi-Fi connection failed
+  * Orange: Wi-Fi connected but NTP sync failed
+  * Green: NTP sync successful (cold boot only)
+* On relay toggle
+  * Red flash: Set
+  * Green flash: Unset
 
 ## Manual setting
 
@@ -103,17 +115,6 @@ The standard connection between the Cifra (left) and Dator (right), comprising �
 * ~~Correct for DST via advance/wait~~
 * Send warning when battery is low
 * Power I2C via GPIO pin to force DS3231 to run off its own battery
-* LED indications
-  * At startup
-    * Teal: Successful boot
-    * Blue: Wi-Fi connected; attempting NTP sync
-    * Red: Wi-Fi connection failed
-    * Orange: Wi-Fi connected but NTP sync failed
-    * Green: NTP sync successful
-  * On relay toggle
-    * Red flash: Set
-    * Green flash: Unset
-  * link [watch the LED](#LED-indications) to here
 * RTClib has native support for alternate I2C interface; use this instead of `#define Wire Wire1`
 * It may be possible to connect an external 32kHz crystal
 

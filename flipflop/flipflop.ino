@@ -109,7 +109,7 @@ void setup(){
     //Attempt to sync to NTP; without NETWORK_SSID, loop() prompts for manual time entry via serial
     #ifdef NETWORK_SSID
       ntpSync();
-      delay(10000); //sketch upload window after NTP
+      delay(20000); //sketch upload window after NTP
     #endif
 
     //INT pin on DS3231 should be ready to go: "When INTCN is set to logic 1, then a match between
@@ -368,7 +368,6 @@ void relaySet(bool state) {
 }
 
 void ntpSync() {
-  //cf. similar function in autoregulator project
   #ifdef NETWORK_SSID
     WiFi.mode(WIFI_STA);
     WiFi.begin(NETWORK_SSID, NETWORK_PASS);
@@ -417,6 +416,10 @@ void ntpSync() {
       if(ntpOk) {
         #ifdef SHOW_SERIAL
           Serial.println(F(" synced."));
+        #endif
+        #ifdef ENABLE_NEOPIXEL
+          pixels.fill(0x00FF00); //green
+          pixels.show();
         #endif
         //Snapshot gettimeofday() so tv_usec gives the exact sub-second offset with no
         //second-boundary race. Re-derive broken-down time from tv.tv_sec (already TZ-adjusted
